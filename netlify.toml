@@ -1,0 +1,13 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  VITE_SUPABASE_URL = "https://uwbublotyipbwvwqkprn.supabase.co"
+  VITE_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3YnVibG90eWlwYnd2d3FrcHJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyNzk1MzQsImV4cCI6MjA4NTg1NTUzNH0.2p-xASe22myMVhhvaLm4Lynh_Gbkr-IfI_CL_IE1kd8"
+
+# 处理 SPA 路由
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
