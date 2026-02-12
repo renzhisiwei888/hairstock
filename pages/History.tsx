@@ -16,6 +16,9 @@ export const History: React.FC = () => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
+  // 月份选择弹窗
+  const [showMonthPicker, setShowMonthPicker] = useState(false);
+  const [pickerYear, setPickerYear] = useState(() => new Date().getFullYear());
 
   // 删除确认状态
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string; type: string; amount: number } | null>(null);
@@ -88,33 +91,60 @@ export const History: React.FC = () => {
   }, [transactions, filterType, searchQuery]);
 
   /**
-   * 月初库存反向推算
-   * NOTE: 根据当前库存和从选定月份到现在的交易记录反向计算
+   * 月初/月末库存反向推算
+   * NOTE: 月初库存 = 当前库存 - 从该月1号到现在的所有净变动
+   *       月末库存 = 当前库存 - 从下月1号到现在的所有净变动
+   *       月内变动 = 月末库存 - 月初库存
    */
   const openingStockData = useMemo(() => {
     const monthStart = openingMonth;
+    const monthEnd = new Date(openingMonth.getFullYear(), openingMonth.getMonth() + 1, 1);
+    const now = new Date();
+    // NOTE: 判断选择的月份是否是当前月份
+    const isCurrentMonth = monthEnd > now;
 
     return products.map(product => {
-      let stockChange = 0;
+      // 从月初到现在的净变动 → 用于计算月初库存
+      let changeFromMonthStart = 0;
+      // 从月末到现在的净变动 → 用于计算月末库存
+      let changeFromMonthEnd = 0;
+
       for (const t of transactions) {
+        if (t.product_id !== product.id) continue;
         const tDate = new Date(t.created_at);
-        if (t.product_id === product.id && tDate >= monthStart) {
-          stockChange += t.type === 'in' ? t.amount : -t.amount;
+        const delta = t.type === 'in' ? t.amount : -t.amount;
+
+        if (tDate >= monthStart) {
+          changeFromMonthStart += delta;
+        }
+        if (!isCurrentMonth && tDate >= monthEnd) {
+          changeFromMonthEnd += delta;
         }
       }
-      // 月初库存 = 当前库存 - 本月及以后的净变动
-      const openingQty = Math.max(0, product.quantity - stockChange);
+
+      const openingQty = Math.max(0, product.quantity - changeFromMonthStart);
+      // 如果是当前月，月末就是当前库存；否则反向推算
+      const closingQty = isCurrentMonth
+        ? product.quantity
+        : Math.max(0, product.quantity - changeFromMonthEnd);
+      const monthlyChange = closingQty - openingQty;
+
       return {
         id: product.id,
         name: product.name,
         brand: product.brand,
         variant: product.variant,
-        currentQty: product.quantity,
         openingQty,
-        change: stockChange,
+        closingQty,
+        change: monthlyChange,
       };
     });
   }, [products, transactions, openingMonth]);
+
+  const isCurrentMonth = useMemo(() => {
+    const now = new Date();
+    return openingMonth.getFullYear() === now.getFullYear() && openingMonth.getMonth() === now.getMonth();
+  }, [openingMonth]);
 
   /**
    * 处理删除交易
@@ -403,19 +433,26 @@ export const History: React.FC = () => {
             <div className="flex items-center justify-between bg-white dark:bg-card-dark rounded-xl p-3 shadow-sm border border-slate-100 dark:border-slate-800">
               <button
                 onClick={() => setOpeningMonth(new Date(openingMonth.getFullYear(), openingMonth.getMonth() - 1, 1))}
-                className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors active:scale-90"
               >
                 <Icon name="chevron_left" className="text-[20px] text-slate-600 dark:text-slate-300" />
               </button>
-              <span className="text-base font-bold text-slate-900 dark:text-white">
-                {openingMonth.getFullYear()}年 {openingMonth.getMonth() + 1}月初
-              </span>
+              {/* NOTE: 点击月份文本可弹出月份选择网格 */}
+              <button
+                onClick={() => { setPickerYear(openingMonth.getFullYear()); setShowMonthPicker(true); }}
+                className="px-3 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors active:scale-95"
+              >
+                <span className="text-base font-bold text-slate-900 dark:text-white">
+                  {openingMonth.getFullYear()}年 {openingMonth.getMonth() + 1}月
+                </span>
+                <Icon name="expand_more" className="text-[16px] text-slate-400 ml-1 inline-block align-middle" />
+              </button>
               <button
                 onClick={() => {
                   const next = new Date(openingMonth.getFullYear(), openingMonth.getMonth() + 1, 1);
                   if (next <= new Date()) setOpeningMonth(next);
                 }}
-                className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors active:scale-90"
               >
                 <Icon name="chevron_right" className="text-[20px] text-slate-600 dark:text-slate-300" />
               </button>
@@ -428,8 +465,8 @@ export const History: React.FC = () => {
                 <p className="text-2xl font-bold text-slate-900 dark:text-white">{openingStockData.reduce((s, p) => s + p.openingQty, 0)}</p>
               </div>
               <div className="bg-white dark:bg-card-dark rounded-xl p-4 shadow-sm border border-slate-100 dark:border-slate-800 text-center">
-                <p className="text-xs text-slate-400 mb-1">当前总库存</p>
-                <p className="text-2xl font-bold text-primary">{openingStockData.reduce((s, p) => s + p.currentQty, 0)}</p>
+                <p className="text-xs text-slate-400 mb-1">{isCurrentMonth ? '当前总库存' : '月末总库存'}</p>
+                <p className="text-2xl font-bold text-primary">{openingStockData.reduce((s, p) => s + p.closingQty, 0)}</p>
               </div>
             </div>
 
@@ -443,17 +480,17 @@ export const History: React.FC = () => {
                         <p className="text-slate-900 dark:text-white text-sm font-semibold truncate">{item.name}</p>
                         <p className="text-slate-400 text-xs mt-0.5">{item.brand} {item.variant}</p>
                       </div>
-                      <div className="flex items-center gap-4 shrink-0">
-                        <div className="text-center">
+                      <div className="flex items-center gap-3 shrink-0">
+                        <div className="text-center min-w-[36px]">
                           <p className="text-xs text-slate-400">月初</p>
                           <p className="text-lg font-bold text-slate-900 dark:text-white">{item.openingQty}</p>
                         </div>
-                        <Icon name="arrow_forward" className="text-slate-300 text-[16px]" />
-                        <div className="text-center">
-                          <p className="text-xs text-slate-400">现在</p>
-                          <p className="text-lg font-bold text-primary">{item.currentQty}</p>
+                        <Icon name="arrow_forward" className="text-slate-300 text-[14px]" />
+                        <div className="text-center min-w-[36px]">
+                          <p className="text-xs text-slate-400">{isCurrentMonth ? '现在' : '月末'}</p>
+                          <p className="text-lg font-bold text-primary">{item.closingQty}</p>
                         </div>
-                        <div className={`text-center px-2 py-1 rounded-lg ${item.change > 0 ? 'bg-green-50 dark:bg-green-900/20' : item.change < 0 ? 'bg-red-50 dark:bg-red-900/20' : 'bg-slate-50 dark:bg-slate-800'}`}>
+                        <div className={`text-center px-2 py-1 rounded-lg min-w-[40px] ${item.change > 0 ? 'bg-green-50 dark:bg-green-900/20' : item.change < 0 ? 'bg-red-50 dark:bg-red-900/20' : 'bg-slate-50 dark:bg-slate-800'}`}>
                           <p className={`text-xs font-bold ${item.change > 0 ? 'text-green-600 dark:text-green-400' : item.change < 0 ? 'text-red-500 dark:text-red-400' : 'text-slate-400'}`}>
                             {item.change > 0 ? '+' : ''}{item.change}
                           </p>
@@ -472,6 +509,49 @@ export const History: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* 月份选择弹窗 */}
+      {showMonthPicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={() => setShowMonthPicker(false)}>
+          <div className="w-full max-w-xs bg-white dark:bg-[#1C1C1E] rounded-2xl p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
+            {/* 年份导航 */}
+            <div className="flex items-center justify-between mb-4">
+              <button onClick={() => setPickerYear(y => y - 1)} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+                <Icon name="chevron_left" className="text-[18px] text-slate-600 dark:text-slate-300" />
+              </button>
+              <span className="text-base font-bold text-slate-900 dark:text-white">{pickerYear}年</span>
+              <button
+                onClick={() => { if (pickerYear < new Date().getFullYear()) setPickerYear(y => y + 1); }}
+                className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <Icon name="chevron_right" className="text-[18px] text-slate-600 dark:text-slate-300" />
+              </button>
+            </div>
+            {/* 月份网格 */}
+            <div className="grid grid-cols-3 gap-2">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => {
+                const isSelected = pickerYear === openingMonth.getFullYear() && m - 1 === openingMonth.getMonth();
+                const isFuture = new Date(pickerYear, m - 1, 1) > new Date();
+                return (
+                  <button
+                    key={m}
+                    disabled={isFuture}
+                    onClick={() => { setOpeningMonth(new Date(pickerYear, m - 1, 1)); setShowMonthPicker(false); }}
+                    className={`py-3 rounded-xl text-sm font-semibold transition-all ${isSelected
+                        ? 'bg-primary text-white shadow-md shadow-primary/30'
+                        : isFuture
+                          ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                          : 'bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      }`}
+                  >
+                    {m}月
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 删除确认对话框 */}
       {deleteConfirm && (
