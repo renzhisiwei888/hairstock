@@ -56,7 +56,8 @@ export const Dashboard: React.FC = () => {
   const filteredAndSortedProducts = useMemo(() => {
     let result = products.filter(p =>
       p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.brand.toLowerCase().includes(searchQuery.toLowerCase())
+      p.brand.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.variant.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
     if (sortOption === 'quantityAsc') {

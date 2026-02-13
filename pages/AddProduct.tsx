@@ -13,6 +13,13 @@ export const AddProduct: React.FC = () => {
   const [notes, setNotes] = useState('');
   const [quantity, setQuantity] = useState<string>('0');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // NOTE: 支持滞后录入，默认当前时间
+  const [customDate, setCustomDate] = useState<string>(() => {
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    return now.toISOString().slice(0, 16);
+  });
+  const [lowStockThreshold, setLowStockThreshold] = useState<string>('5');
 
   const handleIncrement = () => {
     setQuantity(prev => String((parseInt(prev) || 0) + 1));
@@ -55,6 +62,9 @@ export const AddProduct: React.FC = () => {
         variant: variant.trim(),
         notes: notes.trim(),
         quantity: parseInt(quantity) || 0,
+        low_stock_threshold: parseInt(lowStockThreshold) || 5,
+        // NOTE: 将前端本地时间转为 ISO 字符串传入
+        created_at: new Date(customDate).toISOString(),
       });
 
       if (result.data) {
@@ -160,6 +170,22 @@ export const AddProduct: React.FC = () => {
             </div>
           </div>
 
+          {/* 日期时间选择器 */}
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 ml-1" htmlFor="custom-date">创建时间</label>
+            <div className="relative">
+              <input
+                id="custom-date"
+                type="datetime-local"
+                value={customDate}
+                max={(() => { const n = new Date(); n.setMinutes(n.getMinutes() - n.getTimezoneOffset()); return n.toISOString().slice(0, 16); })()}
+                onChange={(e) => setCustomDate(e.target.value)}
+                className="w-full h-14 pl-5 pr-4 rounded-full bg-background-light dark:bg-gray-800 border-transparent focus:border-primary focus:ring-2 focus:ring-primary/20 text-gray-900 dark:text-white text-base transition-all duration-200"
+              />
+            </div>
+            <p className="text-xs text-gray-400 dark:text-gray-500 ml-1">如不修改则为当前时间，滞后录入时请选择实际日期</p>
+          </div>
+
           <div className="flex items-center justify-between py-2">
             <div className="flex flex-col">
               <span className="text-base font-semibold text-gray-900 dark:text-white">初始库存</span>
@@ -183,6 +209,36 @@ export const AddProduct: React.FC = () => {
               <button
                 onClick={handleIncrement}
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-primary text-white shadow-md shadow-primary/30 hover:bg-blue-600 hover:scale-105 active:scale-95 transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary dark:focus:ring-offset-card-dark"
+              >
+                <Icon name="add" className="font-bold text-lg" />
+              </button>
+            </div>
+          </div>
+
+          {/* 低库存阈值 */}
+          <div className="flex items-center justify-between py-2">
+            <div className="flex flex-col">
+              <span className="text-base font-semibold text-gray-900 dark:text-white">低库存预警</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">库存低于此值时提醒</span>
+            </div>
+            <div className="flex items-center bg-background-light dark:bg-gray-800 rounded-full p-1.5 gap-3 shadow-inner">
+              <button
+                onClick={() => setLowStockThreshold(prev => String(Math.max(0, (parseInt(prev) || 0) - 1)))}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-white dark:bg-card-dark text-primary shadow-sm hover:scale-105 active:scale-95 transition-transform duration-150"
+              >
+                <Icon name="remove" className="font-bold text-lg" />
+              </button>
+              <input
+                type="text"
+                inputMode="numeric"
+                className="w-10 text-center bg-transparent border-none text-lg font-bold text-gray-900 dark:text-white p-0 focus:ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                value={lowStockThreshold}
+                onChange={(e) => { if (/^\d*$/.test(e.target.value)) setLowStockThreshold(e.target.value); }}
+                onBlur={() => { if (lowStockThreshold === '') setLowStockThreshold('5'); }}
+              />
+              <button
+                onClick={() => setLowStockThreshold(prev => String((parseInt(prev) || 0) + 1))}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-white shadow-md shadow-primary/30 hover:scale-105 active:scale-95 transition-all duration-150"
               >
                 <Icon name="add" className="font-bold text-lg" />
               </button>

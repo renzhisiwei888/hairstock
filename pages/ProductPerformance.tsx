@@ -13,6 +13,7 @@ interface ProductStat {
   trend: 'up' | 'down' | 'stable';
   trendValue: number;
   turnoverRate: 'High' | 'Med' | 'Low';
+  lowStockThreshold: number;
 }
 
 export const ProductPerformance: React.FC = () => {
@@ -82,9 +83,12 @@ export const ProductPerformance: React.FC = () => {
       const outTransactions = transactions.filter(t => t.product_id === product.id && t.type === 'out');
       let actualMonths = 1;
       if (outTransactions.length > 0) {
+        // NOTE: 使用实际月份差代替 30 天近似，提高精度
         const earliest = new Date(outTransactions[outTransactions.length - 1].created_at);
-        const diffMs = Date.now() - earliest.getTime();
-        actualMonths = Math.max(1, diffMs / (1000 * 60 * 60 * 24 * 30));
+        const monthDiff = (now.getFullYear() - earliest.getFullYear()) * 12
+          + (now.getMonth() - earliest.getMonth())
+          + (now.getDate() >= earliest.getDate() ? 0 : -1);
+        actualMonths = Math.max(1, monthDiff);
       }
       const avgMonthlyConsumption = totalConsumed / actualMonths;
 
@@ -108,7 +112,8 @@ export const ProductPerformance: React.FC = () => {
         inStock: product.quantity,
         trend,
         trendValue,
-        turnoverRate
+        turnoverRate,
+        lowStockThreshold: product.low_stock_threshold ?? 5,
       };
     });
   }, [products, transactions]);
@@ -206,7 +211,7 @@ export const ProductPerformance: React.FC = () => {
 
                 {/* Stock Level */}
                 <div className="col-span-3 flex flex-col items-end justify-center pl-2">
-                  <span className={`text-base font-bold ${stat.inStock < 5 ? 'text-orange-500' : 'text-slate-900 dark:text-white'}`}>
+                  <span className={`text-base font-bold ${stat.inStock <= stat.lowStockThreshold ? 'text-orange-500' : 'text-slate-900 dark:text-white'}`}>
                     {stat.inStock}
                   </span>
                   <span className="text-[10px] text-slate-400">剩余</span>

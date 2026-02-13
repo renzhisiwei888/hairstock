@@ -181,7 +181,9 @@ export const Analytics: React.FC = () => {
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
-      if (payload[0].value == null && payload[1].value == null) return null;
+      // NOTE: 防止只有入库或只有出库时 payload 元素不存在
+      if (!payload[0] && !payload[1]) return null;
+      if (payload[0]?.value == null && payload[1]?.value == null) return null;
 
       return (
         <div className="bg-white dark:bg-[#2C2C2E] p-3 rounded-xl shadow-lg border border-gray-100 dark:border-gray-700 text-xs z-50">
@@ -192,7 +194,7 @@ export const Analytics: React.FC = () => {
               <span className="text-gray-600 dark:text-gray-300">入库: {payload[0].value}</span>
             </div>
           )}
-          {payload[1].value != null && (
+          {payload[1]?.value != null && (
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-orange-500"></span>
               <span className="text-gray-600 dark:text-gray-300">消耗: {payload[1].value}</span>
@@ -438,8 +440,8 @@ export const Analytics: React.FC = () => {
                   key={year}
                   onClick={() => setPickerYear(year)}
                   className={`px-4 py-2 rounded-full text-sm font-semibold whitespace-nowrap transition-colors ${pickerYear === year
-                      ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                    ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
                     }`}
                 >
                   {year}年
@@ -459,10 +461,10 @@ export const Analytics: React.FC = () => {
                     disabled={isFuture}
                     onClick={() => handleMonthSelect(index)}
                     className={`py-4 rounded-2xl text-sm font-semibold transition-all ${isSelected
-                        ? 'bg-primary text-white shadow-lg shadow-primary/30'
-                        : isFuture
-                          ? 'bg-transparent text-slate-300 dark:text-slate-700 cursor-not-allowed'
-                          : 'bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      ? 'bg-primary text-white shadow-lg shadow-primary/30'
+                      : isFuture
+                        ? 'bg-transparent text-slate-300 dark:text-slate-700 cursor-not-allowed'
+                        : 'bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
                       }`}
                   >
                     {month}

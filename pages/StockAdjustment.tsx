@@ -21,6 +21,14 @@ export const StockAdjustment: React.FC = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  // NOTE: 支持滞后录入，默认当前时间
+  const [customDate, setCustomDate] = useState<string>(() => {
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    return now.toISOString().slice(0, 16);
+  });
+  // 产品详情卡片展开/收起
+  const [showDetail, setShowDetail] = useState(false);
 
   // 加载中
   if (productsLoading && !product) {
@@ -110,6 +118,12 @@ export const StockAdjustment: React.FC = () => {
 
     setIsSubmitting(true);
     try {
+      // NOTE: 出库时实际扣减量 = min(输入量, 当前库存)
+      // 避免超量出库破坏 baseStock 算法不变量 (current_qty = baseStock + txNetTotal)
+      const actualAmount = operation === 'subtract'
+        ? Math.min(adjustAmount, currentStock)
+        : adjustAmount;
+
       // 1. 更新产品库存
       const updateSuccess = await updateProductQuantity(product.id, finalStock);
       if (!updateSuccess) {
@@ -117,20 +131,28 @@ export const StockAdjustment: React.FC = () => {
       }
 
       // 2. 创建交易记录
-      await createTransaction({
+      const newTx = await createTransaction({
         product_id: product.id,
         product_name: product.name,
         brand: product.brand,
         type: operation === 'add' ? 'in' : 'out',
-        amount: adjustAmount,
+        amount: actualAmount,
         notes: notes.trim(),
+        // NOTE: 支持滞后录入
+        created_at: new Date(customDate).toISOString(),
       });
+
+      // NOTE: 交易创建失败时回滚库存，保证数据一致性
+      if (!newTx) {
+        await updateProductQuantity(product.id, currentStock);
+        throw new Error('交易记录创建失败，库存已回滚');
+      }
 
       setShowConfirmation(false);
       navigate(-1);
     } catch (error) {
       console.error('库存调整失败:', error);
-      alert('操作失败，请重试');
+      alert(error instanceof Error ? error.message : '操作失败，请重试');
     } finally {
       setIsSubmitting(false);
     }
@@ -163,6 +185,44 @@ export const StockAdjustment: React.FC = () => {
             <Icon name="delete" className="text-xl" />
           </button>
         </div>
+      </div>
+
+      {/* 产品详情卡片 */}
+      <div className="px-4 pt-1 shrink-0">
+        <button
+          onClick={() => setShowDetail(!showDetail)}
+          className="w-full flex items-center justify-between px-4 py-2.5 bg-white dark:bg-card-dark rounded-xl shadow-sm border border-slate-100 dark:border-slate-800 text-sm"
+        >
+          <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
+            <Icon name="info" className="text-[18px] text-primary" />
+            <span className="font-medium">产品详情</span>
+          </div>
+          <Icon name={showDetail ? 'expand_less' : 'expand_more'} className="text-slate-400 text-[20px]" />
+        </button>
+        {showDetail && (
+          <div className="mt-2 bg-white dark:bg-card-dark rounded-xl shadow-sm border border-slate-100 dark:border-slate-800 p-4 space-y-2.5 animate-fade-in">
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-400">品牌</span>
+              <span className="font-medium text-slate-900 dark:text-white">{product.brand || '未设置'}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-400">规格</span>
+              <span className="font-medium text-slate-900 dark:text-white">{product.variant || '未设置'}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-400">备注</span>
+              <span className="font-medium text-slate-900 dark:text-white truncate max-w-[60%] text-right">{product.notes || '无'}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-400">创建时间</span>
+              <span className="font-medium text-slate-900 dark:text-white">{new Date(product.created_at).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-400">低库存阈值</span>
+              <span className="font-medium text-slate-900 dark:text-white">{product.low_stock_threshold}</span>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="px-4 py-3 shrink-0">
@@ -206,6 +266,20 @@ export const StockAdjustment: React.FC = () => {
                 placeholder="添加备注 (可选)..."
               />
             </div>
+            {/* 时间选择器 */}
+            <div className="relative mt-2">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <Icon name="schedule" className="text-slate-400 group-focus-within:text-primary transition-colors text-[20px]" />
+              </div>
+              <input
+                type="datetime-local"
+                value={customDate}
+                max={(() => { const n = new Date(); n.setMinutes(n.getMinutes() - n.getTimezoneOffset()); return n.toISOString().slice(0, 16); })()}
+                onChange={(e) => setCustomDate(e.target.value)}
+                className="block w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+              />
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1 ml-1">滞后录入时请选择实际日期</p>
           </div>
         </div>
       </div>

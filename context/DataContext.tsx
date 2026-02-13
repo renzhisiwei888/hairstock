@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode, useCallback } from 'react';
 import { supabase, isSupabaseConfigured, testConnection } from '../lib/supabase';
 import { useAuth } from './AuthContext';
 
@@ -64,6 +64,8 @@ interface ProductInsert {
     image_url?: string;
     low_stock_threshold?: number;
     notes?: string;
+    // NOTE: 支持滞后录入，前端传入 created_at 覆盖 DB DEFAULT now()
+    created_at?: string;
 }
 
 interface TransactionInsert {
@@ -73,6 +75,8 @@ interface TransactionInsert {
     type: 'in' | 'out';
     amount: number;
     notes?: string;
+    // NOTE: 支持滞后录入，前端传入 created_at 覆盖 DB DEFAULT now()
+    created_at?: string;
 }
 
 interface DataContextType {
@@ -93,12 +97,15 @@ interface DataContextType {
     createProduct: (product: ProductInsert) => Promise<{ data: Product | null; error: string | null }>;
     updateProductQuantity: (productId: string, newQuantity: number) => Promise<boolean>;
     deleteProduct: (productId: string) => Promise<boolean>;
-    // 交易
+    // 交易（当前仓库）
     transactions: Transaction[];
     transactionsLoading: boolean;
     fetchTransactions: () => Promise<void>;
     createTransaction: (transaction: TransactionInsert) => Promise<Transaction | null>;
     deleteTransaction: (transactionId: string) => Promise<{ success: boolean; error: string | null }>;
+    // NOTE: 全量交易（跨仓库，供月初数统计等全局分析使用）
+    allTransactions: Transaction[];
+    fetchAllTransactions: () => Promise<void>;
     // 统计
     totalIn: number;
     totalOut: number;
@@ -123,12 +130,18 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const [currentWarehouseId, setCurrentWarehouseIdState] = useState<string>(() => {
         return localStorage.getItem(CURRENT_WAREHOUSE_KEY) || '';
     });
+    // NOTE: 用 ref 持有当前仓库 ID，供 fetchWarehouses 内部读取，
+    // 避免将其作为 useCallback 依赖导致循环重建
+    const currentWarehouseIdRef = useRef(currentWarehouseId);
+    currentWarehouseIdRef.current = currentWarehouseId;
 
     // 产品和交易状态
     const [products, setProducts] = useState<Product[]>([]);
     const [productsLoading, setProductsLoading] = useState(false);
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [transactionsLoading, setTransactionsLoading] = useState(false);
+    // NOTE: 全量交易记录，不受仓库筛选限制，供月初数等跨时间统计使用
+    const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
     const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
 
     // 当前仓库
@@ -167,11 +180,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
      */
     const fetchWarehouses = useCallback(async () => {
         if (!user) {
-            console.log('[fetchWarehouses] 用户未登录，跳过');
+            console.debug('[fetchWarehouses] 用户未登录，跳过');
             return;
         }
 
-        console.log('[fetchWarehouses] 开始加载仓库列表...');
+        console.debug('[fetchWarehouses] 开始加载仓库列表...');
         setWarehousesLoading(true);
 
         try {
@@ -182,7 +195,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 .order('is_default', { ascending: false })
                 .order('created_at', { ascending: true });
 
-            console.log('[fetchWarehouses] 查询结果:', { data, error });
+            console.debug('[fetchWarehouses] 查询结果:', { data, error });
 
             if (error) {
                 // 如果表不存在，禁用仓库功能
@@ -197,15 +210,15 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 throw error;
             }
 
-            console.log('[fetchWarehouses] 仓库功能已启用');
+            console.debug('[fetchWarehouses] 仓库功能已启用');
             setWarehouseEnabled(true);
             const warehouseList = (data as Warehouse[]) || [];
-            console.log('[fetchWarehouses] 找到仓库数量:', warehouseList.length);
+            console.debug('[fetchWarehouses] 找到仓库数量:', warehouseList.length);
             setWarehouses(warehouseList);
 
             // 如果没有仓库，自动创建默认仓库
             if (warehouseList.length === 0) {
-                console.log('[fetchWarehouses] 没有仓库，创建默认仓库...');
+                console.debug('[fetchWarehouses] 没有仓库，创建默认仓库...');
                 try {
                     const { data: newWarehouse, error: createError } = await supabase
                         .from('warehouses')
@@ -219,23 +232,23 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                         .select()
                         .single();
 
-                    console.log('[fetchWarehouses] 创建默认仓库结果:', { newWarehouse, createError });
+                    console.debug('[fetchWarehouses] 创建默认仓库结果:', { newWarehouse, createError });
 
                     if (!createError && newWarehouse) {
                         setWarehouses([newWarehouse as Warehouse]);
                         setCurrentWarehouseId((newWarehouse as any).id);
-                        console.log('[fetchWarehouses] 默认仓库创建成功');
+                        console.debug('[fetchWarehouses] 默认仓库创建成功');
                     } else if (createError) {
                         console.error('[fetchWarehouses] 创建默认仓库失败:', createError.message);
                     }
                 } catch (e) {
                     console.error('[fetchWarehouses] 创建默认仓库异常:', e);
                 }
-            } else if (!currentWarehouseId || !warehouseList.find(w => w.id === currentWarehouseId)) {
+            } else if (!currentWarehouseIdRef.current || !warehouseList.find(w => w.id === currentWarehouseIdRef.current)) {
                 // 设置默认仓库为当前仓库
                 const defaultWarehouse = warehouseList.find(w => w.is_default) || warehouseList[0];
                 if (defaultWarehouse) {
-                    console.log('[fetchWarehouses] 设置当前仓库:', defaultWarehouse.id);
+                    console.debug('[fetchWarehouses] 设置当前仓库:', defaultWarehouse.id);
                     setCurrentWarehouseId(defaultWarehouse.id);
                 }
             }
@@ -245,9 +258,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             setWarehouses([]);
         } finally {
             setWarehousesLoading(false);
-            console.log('[fetchWarehouses] 加载完成');
+            console.debug('[fetchWarehouses] 加载完成');
         }
-    }, [user, currentWarehouseId, setCurrentWarehouseId]);
+        // NOTE: 不依赖 currentWarehouseId，通过 ref 读取，避免 fetchWarehouses→setCurrentWarehouseId→重建→useEffect 循环
+    }, [user, setCurrentWarehouseId]);
 
     /**
      * 创建仓库
@@ -418,6 +432,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             setWarehouses(prev => prev.filter(w => w.id !== id));
             setProducts(prev => prev.filter(p => p.warehouse_id !== id));
             setTransactions(prev => prev.filter(t => t.warehouse_id !== id));
+            // NOTE: 同步清理全量交易，避免月初数残留已删除仓库的数据
+            setAllTransactions(prev => prev.filter(t => t.warehouse_id !== id));
 
             // 如果删除的是当前仓库，切换到默认仓库
             if (currentWarehouseId === id) {
@@ -493,6 +509,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 image_url: productData.image_url || '',
                 low_stock_threshold: productData.low_stock_threshold || 5,
                 notes: productData.notes || '',
+                // NOTE: 支持滞后录入，前端传入则覆盖 DB DEFAULT now()
+                ...(productData.created_at ? { created_at: productData.created_at } : {}),
             };
 
             // 如果仓库功能启用，添加 warehouse_id
@@ -521,6 +539,46 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
             const newProduct = data as Product;
             setProducts(prev => [...prev, newProduct]);
+
+            // NOTE: 初始库存 > 0 时，自动创建入库交易记录
+            // 确保月初库存反向推算有完整的交易历史可依赖
+            const initialQty = productData.quantity || 0;
+            if (initialQty > 0) {
+                try {
+                    const txInsert: Record<string, unknown> = {
+                        user_id: user.id,
+                        product_id: newProduct.id,
+                        product_name: newProduct.name,
+                        brand: newProduct.brand || '',
+                        type: 'in',
+                        amount: initialQty,
+                        notes: '初始库存',
+                        // NOTE: 初始库存交易的时间与产品创建时间保持一致
+                        ...(productData.created_at ? { created_at: productData.created_at } : {}),
+                    };
+                    if (warehouseEnabled && currentWarehouse) {
+                        txInsert.warehouse_id = currentWarehouse.id;
+                    }
+                    const { data: txData, error: txError } = await supabase
+                        .from('transactions')
+                        .insert(txInsert as any)
+                        .select()
+                        .single();
+
+                    if (!txError && txData) {
+                        const newTx = txData as Transaction;
+                        setTransactions(prev => [newTx, ...prev]);
+                        // NOTE: 同步全量交易，确保月初数等统计能立即反映新创建的初始库存
+                        setAllTransactions(prev => [...prev, newTx]);
+                    } else {
+                        console.warn('[createProduct] 初始库存交易创建失败:', txError?.message);
+                    }
+                } catch (txErr) {
+                    // 交易创建失败不影响产品创建结果
+                    console.warn('[createProduct] 初始库存交易创建异常:', txErr);
+                }
+            }
+
             return { data: newProduct, error: null };
         } catch (err) {
             console.error('[createProduct] 异常:', err);
@@ -577,6 +635,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             // 同步更新本地状态
             setProducts(prev => prev.filter(p => p.id !== productId));
             setTransactions(prev => prev.filter(t => t.product_id !== productId));
+            // NOTE: 同步清理全量交易，避免月初数计算残留已删除产品
+            setAllTransactions(prev => prev.filter(t => t.product_id !== productId));
             return true;
         } catch (error) {
             console.error('删除产品失败:', error);
@@ -621,6 +681,30 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }, [user, warehouseEnabled, currentWarehouse]);
 
     /**
+     * 加载全量交易记录（不受仓库筛选）
+     * 用于月初数统计等需要完整历史数据的场景
+     */
+    const fetchAllTransactions = useCallback(async () => {
+        if (!user) return;
+
+        try {
+            const { data, error } = await supabase
+                .from('transactions')
+                .select('*')
+                .eq('user_id', user.id)
+                .order('created_at', { ascending: true });
+
+            if (error) {
+                console.error('[fetchAllTransactions] 获取全量交易失败:', error);
+                return;
+            }
+            setAllTransactions((data as Transaction[]) || []);
+        } catch (error) {
+            console.error('[fetchAllTransactions] 异常:', error);
+        }
+    }, [user]);
+
+    /**
      * 创建交易记录
      */
     const createTransaction = async (transactionData: TransactionInsert): Promise<Transaction | null> => {
@@ -635,6 +719,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 type: transactionData.type,
                 amount: transactionData.amount,
                 notes: transactionData.notes || '',
+                // NOTE: 支持滞后录入，前端传入则覆盖 DB DEFAULT now()
+                ...(transactionData.created_at ? { created_at: transactionData.created_at } : {}),
             };
 
             // 如果仓库功能启用，添加 warehouse_id
@@ -652,6 +738,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
             const newTransaction = data as Transaction;
             setTransactions(prev => [newTransaction, ...prev]);
+            // NOTE: 同步全量交易
+            setAllTransactions(prev => [...prev, newTransaction]);
             return newTransaction;
         } catch (error) {
             console.error('创建交易记录失败:', error);
@@ -703,10 +791,22 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 .eq('id', transactionId);
 
             if (deleteError) {
-                throw deleteError;
+                // NOTE: 删除交易失败 → 回滚已修改的库存，避免数据不一致
+                if (product) {
+                    await supabase
+                        .from('products')
+                        .update({ quantity: product.quantity, updated_at: new Date().toISOString() })
+                        .eq('id', product.id);
+                    setProducts(prev => prev.map(p =>
+                        p.id === product.id ? { ...p, quantity: product.quantity } : p
+                    ));
+                }
+                return { success: false, error: '删除交易记录失败，库存已回滚' };
             }
 
             setTransactions(prev => prev.filter(t => t.id !== transactionId));
+            // NOTE: 同步全量交易
+            setAllTransactions(prev => prev.filter(t => t.id !== transactionId));
             return { success: true, error: null };
         } catch (error) {
             console.error('删除交易记录失败:', error);
@@ -731,13 +831,16 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         if (user) {
             // 首先尝试加载仓库
             fetchWarehouses();
+            // NOTE: 全量交易只需在登录时加载一次，不受仓库切换影响
+            fetchAllTransactions();
         } else {
             setWarehouses([]);
             setProducts([]);
             setTransactions([]);
+            setAllTransactions([]);
             setWarehouseEnabled(false);
         }
-    }, [user, fetchWarehouses]);
+    }, [user, fetchWarehouses, fetchAllTransactions]);
 
     // 仓库加载完成后，或仓库变更后，加载产品和交易
     useEffect(() => {
@@ -766,12 +869,15 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             createProduct,
             updateProductQuantity,
             deleteProduct,
-            // 交易
+            // 交易（当前仓库）
             transactions,
             transactionsLoading,
             fetchTransactions,
             createTransaction,
             deleteTransaction,
+            // 全量交易（跨仓库）
+            allTransactions,
+            fetchAllTransactions,
             // 统计
             totalIn,
             totalOut,

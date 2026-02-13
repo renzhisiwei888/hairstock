@@ -35,6 +35,8 @@ export const Settings: React.FC = () => {
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  // NOTE: 记录最后同步时间，避免永远显示"刚刚"
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
 
   // 个人资料表单
   const [profileForm, setProfileForm] = useState({
@@ -63,12 +65,27 @@ export const Settings: React.FC = () => {
     }
   };
 
+  /**
+   * 格式化同步时间差
+   */
+  const formatSyncTime = (syncTime: Date | null): string => {
+    if (!syncTime) return '尚未同步';
+    const diffMs = Date.now() - syncTime.getTime();
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return '刚刚';
+    if (diffMin < 60) return `${diffMin}分钟前`;
+    const diffHour = Math.floor(diffMin / 60);
+    if (diffHour < 24) return `${diffHour}小时前`;
+    return syncTime.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
   const handleSync = async () => {
     if (isSyncing) return;
     setIsSyncing(true);
     try {
       // NOTE: 真正从 Supabase 重新拉取数据
       await Promise.all([fetchProducts(), fetchTransactions()]);
+      setLastSyncTime(new Date());
     } catch (error) {
       console.error('同步失败:', error);
     } finally {
@@ -77,14 +94,16 @@ export const Settings: React.FC = () => {
   };
 
   const handleExportStock = () => {
-    const headers = ['ID', '品牌', '产品名称', '规格', '数量', '状态'];
+    const headers = ['ID', '品牌', '产品名称', '规格', '数量', '状态', '创建时间', '备注'];
     const rows = products.map(product => [
       product.id,
       `"${product.brand}"`,
       `"${product.name}"`,
       `"${product.variant}"`,
       product.quantity,
-      product.quantity <= product.low_stock_threshold ? 'Low Stock' : 'Normal'
+      product.quantity <= product.low_stock_threshold ? 'Low Stock' : 'Normal',
+      new Date(product.created_at).toLocaleDateString('zh-CN'),
+      `"${(product.notes || '').replace(/"/g, '""')}"`,
     ]);
     const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -277,7 +296,7 @@ export const Settings: React.FC = () => {
                   {isSyncing ? '同步中...' : '云端同步'}
                 </p>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {isSyncing ? '请保持网络连接' : '上次同步: 刚刚'}
+                  {isSyncing ? '请保持网络连接' : `上次同步: ${formatSyncTime(lastSyncTime)}`}
                 </p>
               </div>
               {isSyncing ? (

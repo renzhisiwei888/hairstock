@@ -3,7 +3,7 @@ import { Icon } from '../components/Icon';
 import { useData } from '../context/DataContext';
 
 export const History: React.FC = () => {
-  const { transactions, products, transactionsLoading, deleteTransaction } = useData();
+  const { transactions, products, transactionsLoading, deleteTransaction, allTransactions } = useData();
 
   const [filterType, setFilterType] = useState<'all' | 'in' | 'out'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -71,8 +71,11 @@ export const History: React.FC = () => {
     const filtered = transactions.filter(item => {
       const matchesType = filterType === 'all' || item.type === filterType;
       const q = searchQuery.toLowerCase();
+      // NOTE: 交易表无 variant 字段，通过关联 products 获取
+      const variant = products.find(p => p.id === item.product_id)?.variant || '';
       const matchesSearch = item.product_name.toLowerCase().includes(q) ||
-        item.brand.toLowerCase().includes(q);
+        item.brand.toLowerCase().includes(q) ||
+        variant.toLowerCase().includes(q);
       return matchesType && matchesSearch;
     });
 
@@ -91,55 +94,95 @@ export const History: React.FC = () => {
   }, [transactions, filterType, searchQuery]);
 
   /**
-   * 月初/月末库存反向推算
-   * NOTE: 月初库存 = 当前库存 - 从该月1号到现在的所有净变动
-   *       月末库存 = 当前库存 - 从下月1号到现在的所有净变动
-   *       月内变动 = 月末库存 - 月初库存
+   * 月初/月末库存计算 — 正向累加快照算法
+   *
+   * NOTE: 核心思路：
+   * 1. 计算产品的"创建时初始库存" = 当前库存 - 全部交易净值
+   *    这个值代表产品创建(created_at)时不由交易记录记录的初始库存
+   * 2. 从创建时刻起，逐笔累加交易，得到任意时间点的库存快照
+   * 3. 月初快照 = 累加到 monthStart 时的值
+   * 4. 月末快照 = 累加到 monthEnd 时的值（当前月则为实时库存）
+   *
+   * 使用 allTransactions（全量交易，不受仓库筛选限制）确保数据完整
    */
   const openingStockData = useMemo(() => {
     const monthStart = openingMonth;
     const monthEnd = new Date(openingMonth.getFullYear(), openingMonth.getMonth() + 1, 1);
     const now = new Date();
-    // NOTE: 判断选择的月份是否是当前月份
-    const isCurrentMonth = monthEnd > now;
+    const isCurrentMonthCalc = monthEnd > now;
 
-    return products.map(product => {
-      // 从月初到现在的净变动 → 用于计算月初库存
-      let changeFromMonthStart = 0;
-      // 从月末到现在的净变动 → 用于计算月末库存
-      let changeFromMonthEnd = 0;
+    return products
+      .filter(product => {
+        // 产品在该月尚未创建 → 不显示
+        const productCreated = new Date(product.created_at);
+        if (productCreated >= monthEnd && !isCurrentMonthCalc) return false;
+        // 当前月：如果产品创建时间在未来（不可能但防御性编程），也排除
+        if (isCurrentMonthCalc && productCreated > now) return false;
+        return true;
+      })
+      .map(product => {
+        const productCreated = new Date(product.created_at);
 
-      for (const t of transactions) {
-        if (t.product_id !== product.id) continue;
-        const tDate = new Date(t.created_at);
-        const delta = t.type === 'in' ? t.amount : -t.amount;
+        // 步骤 1：找出该产品的所有交易（来自 allTransactions，按 created_at 升序）
+        const productTxs = allTransactions.filter(t => t.product_id === product.id);
 
-        if (tDate >= monthStart) {
-          changeFromMonthStart += delta;
+        // 步骤 2：计算"无交易覆盖的初始库存"
+        // 当前库存 = 初始库存 + 全部交易净值
+        // → 初始库存 = 当前库存 - 全部交易净值
+        const txNetTotal = productTxs.reduce((sum, t) =>
+          sum + (t.type === 'in' ? t.amount : -t.amount), 0);
+        const baseStock = Math.max(0, product.quantity - txNetTotal);
+
+        // 步骤 3：正向累加，计算月初和月末时间点的库存快照
+        // 从产品创建时开始，库存 = baseStock
+        let stockAtMonthStart = baseStock;
+        let stockAtMonthEnd = baseStock;
+        let reachedMonthStart = false;
+        let reachedMonthEnd = false;
+
+        for (const tx of productTxs) {
+          const txDate = new Date(tx.created_at);
+          const delta = tx.type === 'in' ? tx.amount : -tx.amount;
+
+          // 到达月初时间点前的全部累加
+          if (txDate < monthStart) {
+            stockAtMonthStart += delta;
+            stockAtMonthEnd += delta;
+          } else if (isCurrentMonthCalc || txDate < monthEnd) {
+            // 月初之后、月末之前的交易 → 只影响月末
+            if (!reachedMonthStart) reachedMonthStart = true;
+            stockAtMonthEnd += delta;
+          } else {
+            // 月末之后的交易 → 都不影响
+            if (!reachedMonthEnd) reachedMonthEnd = true;
+          }
         }
-        if (!isCurrentMonth && tDate >= monthEnd) {
-          changeFromMonthEnd += delta;
+
+        // 修正：如果产品在月初之后才创建，月初库存应为 0
+        let openingQty = productCreated >= monthStart ? 0 : Math.max(0, stockAtMonthStart);
+        // 如果是当前月，月末 = 当前实时库存（更精确）
+        let closingQty = isCurrentMonthCalc ? product.quantity : Math.max(0, stockAtMonthEnd);
+
+        // 如果产品在月末之后才创建，月末库存也应为 0
+        if (!isCurrentMonthCalc && productCreated >= monthEnd) {
+          closingQty = 0;
         }
-      }
 
-      const openingQty = Math.max(0, product.quantity - changeFromMonthStart);
-      // 如果是当前月，月末就是当前库存；否则反向推算
-      const closingQty = isCurrentMonth
-        ? product.quantity
-        : Math.max(0, product.quantity - changeFromMonthEnd);
-      const monthlyChange = closingQty - openingQty;
+        const monthlyChange = closingQty - openingQty;
 
-      return {
-        id: product.id,
-        name: product.name,
-        brand: product.brand,
-        variant: product.variant,
-        openingQty,
-        closingQty,
-        change: monthlyChange,
-      };
-    });
-  }, [products, transactions, openingMonth]);
+        return {
+          id: product.id,
+          name: product.name,
+          brand: product.brand,
+          variant: product.variant,
+          openingQty,
+          closingQty,
+          change: monthlyChange,
+        };
+      })
+      // NOTE: 过滤掉月初、月末均为 0 且无变动的产品，减少 UI 干扰
+      .filter(item => item.openingQty > 0 || item.closingQty > 0 || item.change !== 0);
+  }, [products, allTransactions, openingMonth]);
 
   const isCurrentMonth = useMemo(() => {
     const now = new Date();
@@ -207,9 +250,11 @@ export const History: React.FC = () => {
       return;
     }
 
-    const headers = ['ID', '日期', '时间', '类型', '产品名称', '品牌', '数量', '备注'];
+    const headers = ['ID', '日期', '时间', '类型', '产品名称', '品牌', '规格', '数量', '备注'];
     const rows = dataToExport.map(item => {
       const date = new Date(item.created_at);
+      // NOTE: 通过 product_id 关联获取规格信息
+      const product = products.find(p => p.id === item.product_id);
       return [
         item.id,
         date.toLocaleDateString('zh-CN'),
@@ -217,6 +262,7 @@ export const History: React.FC = () => {
         item.type === 'in' ? '入库' : '出库',
         `"${item.product_name}"`,
         `"${item.brand}"`,
+        `"${product?.variant || ''}"`,
         item.amount,
         `"${item.notes || ''}"`
       ];
@@ -538,10 +584,10 @@ export const History: React.FC = () => {
                     disabled={isFuture}
                     onClick={() => { setOpeningMonth(new Date(pickerYear, m - 1, 1)); setShowMonthPicker(false); }}
                     className={`py-3 rounded-xl text-sm font-semibold transition-all ${isSelected
-                        ? 'bg-primary text-white shadow-md shadow-primary/30'
-                        : isFuture
-                          ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                          : 'bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      ? 'bg-primary text-white shadow-md shadow-primary/30'
+                      : isFuture
+                        ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                        : 'bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
                       }`}
                   >
                     {m}月
